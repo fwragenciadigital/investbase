@@ -1,0 +1,50 @@
+name: Atualizar dados do Tesouro Direto
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 14 * * 1-5"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/update-tesouro.mjs"
+      - ".github/workflows/update-tesouro.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tesouro-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gerar JSON normalizado
+        id: generate
+        shell: bash
+        run: |
+          set +e
+          node scripts/update-tesouro.mjs
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Salvar dados e status
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/tesouro-atual.json data/tesouro-status.json
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteração de dados."
+          else
+            git commit -m "chore: atualizar dados do Tesouro Direto"
+            git push
+          fi
+
+      - name: Encerrar com falha da fonte, se houver
+        if: steps.generate.outputs.exit_code != '0'
+        run: exit 1
