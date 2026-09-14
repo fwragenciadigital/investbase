@@ -53,7 +53,6 @@ async function main() {
       signal: AbortSignal.timeout(120000),
       headers: { "User-Agent": "investbase-tesouro-sync/1.0" }
     });
-
     if (!response.ok) throw new Error(`Fonte oficial respondeu HTTP ${response.status}`);
 
     const text = await response.text();
@@ -65,15 +64,26 @@ async function main() {
       throw new Error("Cabeçalho do CSV oficial não corresponde ao formato esperado");
     }
 
-    const latestByTitle = new Map();
-    for (const row of rows) {
+    const datedRows = rows.map((row) => ({
+      row,
+      baseDate: toIsoDate(row["Data Base"])
+    })).filter(({ baseDate }) => baseDate);
+
+    const latestBaseDate = datedRows.reduce((latest, { baseDate }) =>
+      !latest || baseDate > latest ? baseDate : latest, null
+    );
+    if (!latestBaseDate) throw new Error("CSV sem data-base válida");
+
+    // Publica somente a fotografia mais recente. Dados históricos não podem atualizar PUs atuais.
+    const titlesByKey = new Map();
+    for (const { row, baseDate } of datedRows) {
+      if (baseDate !== latestBaseDate) continue;
+
       const title = String(row["Tipo Titulo"] || "").trim();
       const maturityDate = toIsoDate(row["Data Vencimento"]);
-      const baseDate = toIsoDate(row["Data Base"]);
       const basePrice = toNumber(row["PU Base Manha"]);
-      if (!title || !maturityDate || !baseDate || basePrice === null) continue;
+      if (!title || !maturityDate || basePrice === null) continue;
 
-      const key = `${title}|${maturityDate}`;
       const candidate = {
         title,
         maturity_date: maturityDate,
@@ -86,20 +96,15 @@ async function main() {
         sell_price: toNumber(row["PU Venda Manha"]),
         base_price: basePrice
       };
-      const current = latestByTitle.get(key);
-      if (!current || candidate.base_date > current.base_date) latestByTitle.set(key, candidate);
+      titlesByKey.set(`${title}|${maturityDate}`, candidate);
     }
 
-    const titles = [...latestByTitle.values()].sort((a, b) =>
+    const titles = [...titlesByKey.values()].sort((a, b) =>
       a.title.localeCompare(b.title, "pt-BR") || a.maturity_date.localeCompare(b.maturity_date)
     );
-    if (!titles.length) throw new Error("Nenhum título válido foi extraído do CSV");
+    if (!titles.length) throw new Error("Nenhum título da data-base mais recente foi extraído");
 
-    const latestBaseDate = titles.reduce((latest, item) =>
-      !latest || item.base_date > latest ? item.base_date : latest, null
-    );
     const generatedAt = new Date().toISOString();
-
     await writeJson(DATA_FILE, {
       status: "success",
       source: { name: "Tesouro Transparente", url: SOURCE_URL },
@@ -114,7 +119,7 @@ async function main() {
       source_url: SOURCE_URL,
       latest_base_date: latestBaseDate,
       title_count: titles.length,
-      message: "Dados oficiais normalizados com sucesso."
+      message: "Dados oficiais da data-base mais recente normalizados com sucesso."
     });
   } catch (error) {
     let lastKnown = null;
